@@ -1,0 +1,61 @@
+version: '1.0'
+
+services:
+  # MongoDB
+  mongodb:
+    image: mongo:latest
+    container_name: trading-mongodb
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: ${MONGO_INITDB_DATABASE}
+#      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+#      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+#      MONGODB_DB: ${MONGODB_DB}
+#      MONGODB_USER: ${MONGODB_USER}
+#      MONGODB_PASSWORD: ${MONGODB_PASSWORD}
+    command: ["--noauth"]  # disable auth
+    volumes:
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+      - mongodb_data:/data/db
+    networks:
+      - trading_network
+
+  # Zookeeper
+  zookeeper:
+    image: wurstmeister/zookeeper:latest
+    container_name: psis-zookeeper
+    ports:
+      - "2181:2181"
+    networks:
+      - trading_network
+
+  # Kafka
+  kafka:
+    image: wurstmeister/kafka:latest
+    container_name: psis-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_LISTENERS=PLAINTEXT://:9092
+      - KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_AUTO_CREATE_TOPICS_ENABLE=true
+      - KAFKA_CREATE_TOPICS=trading_signals:1:1
+    depends_on:
+      - zookeeper
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - trading_network
+
+
+networks:
+  trading_network:
+    driver: bridge
+
+volumes:
+  mongodb_data:
+  zookeeper_data:
+  kafka_data:
