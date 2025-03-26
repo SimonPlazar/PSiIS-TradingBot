@@ -1,5 +1,5 @@
-
 from binance.client import Client
+
 
 client = Client()  # No API key needed for public endpoints
 
@@ -15,6 +15,7 @@ print(symbol_info)
 
 FEE_RATE = 0.001  # 0.1% fee
 
+
 def get_price(symbol):
     """Fetches the best bid/ask price (accounts for slippage)."""
     depth = client.get_order_book(symbol=symbol, limit=5)
@@ -23,8 +24,20 @@ def get_price(symbol):
     return best_bid, best_ask
 
 
+from kafka import KafkaConsumer
+import pandas as pd
 
 
+if "main" in __name__:
+    # Set up Kafka consumer
+    consumer = KafkaConsumer(
+        'trading_signals',
+        bootstrap_servers=['localhost:9092'],
+        auto_offset_reset='latest',
+        value_deserializer=lambda x: pd.json.loads(x.decode('utf-8'))
+    )
 
-# if "main" in __name__:
-#     pass
+    for message in consumer:
+        signal = message.value
+        print(f"Received signal: {signal}")
+
