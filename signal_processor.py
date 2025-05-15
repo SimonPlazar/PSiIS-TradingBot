@@ -1,46 +1,38 @@
-from pymongo import MongoClient
-from pymongo.errors import PyMongoError
 from datetime import datetime
+from pymongo.errors import PyMongoError
 from price_provider.binance_price import get_best_prices
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-
-MONGO_USER = os.getenv("MONGO_INITDB_ROOT_USERNAME")
-MONGO_PASS = os.getenv("MONGO_INITDB_ROOT_PASSWORD")
-MONGO_DB = os.getenv("MONGO_INITDB_DATABASE")
-MONGO_URI = f"mongodb://{MONGO_USER}:{MONGO_PASS}@localhost:27017/?authSource={MONGO_DB}"
-
-client = MongoClient(MONGO_URI)
-db = client[MONGO_DB]
+from portfolio_manager_cli import PortfolioManager
 
 FEE_RATE = 0.001
 
-def process_signal(signal):
+manager = PortfolioManager()
+
+def process_signal(signal: dict):
     from_currency = signal["from_symbol"]
     to_currency = signal["to_symbol"]
     action = signal["action"]
     amount = float(signal["amount"])
 
-    with client.start_session() as session:
+    with manager.client.start_session() as session:
         try:
             with session.start_transaction():
-                from_asset = db.currencies.find_one({"symbol": from_currency}, session=session)
-                to_asset = db.currencies.find_one({"symbol": to_currency}, session=session) or {"symbol": to_currency, "balance": 0}
+                from_asset = manager.get_currency(from_currency, session=session)
+                to_asset = manager.get_currency(to_currency, session=session, create_if_missing=True)
+
                 best_bid, best_ask = get_best_prices(to_currency)
                 rate = best_ask if action == "BUY" else best_bid
 
                 if action == "BUY":
                     if from_asset["balance"] < amount:
-                        raise Exception("Insufficient balance")
+                        raise ValueError("Insufficient balance to buy")
+
                     to_amount = amount / rate
                     fee = amount * FEE_RATE
 
-                    db.currencies.update_one({"symbol": from_currency}, {"$inc": {"balance": -(amount + fee)}}, session=session)
-                    db.currencies.update_one({"symbol": to_currency}, {"$inc": {"balance": to_amount}}, upsert=True, session=session)
+                    manager.update_balance(from_currency, -(amount + fee), session=session)
+                    manager.update_balance(to_currency, to_amount, session=session)
 
-                    db.transactions.insert_one({
+                    manager.record_transaction({
                         "from_currency": from_currency,
                         "from_amount": amount,
                         "to_currency": to_currency,
@@ -53,16 +45,16 @@ def process_signal(signal):
 
                 elif action == "SELL":
                     if to_asset["balance"] <= 0:
-                        raise Exception("No holdings of target asset")
+                        raise ValueError("No holdings of target asset to sell")
 
                     to_amount = to_asset["balance"]
                     from_amount = to_amount * rate
                     fee = from_amount * FEE_RATE
 
-                    db.currencies.update_one({"symbol": to_currency}, {"$set": {"balance": 0}}, session=session)
-                    db.currencies.update_one({"symbol": from_currency}, {"$inc": {"balance": from_amount - fee}}, session=session)
+                    manager.set_balance(to_currency, 0, session=session)
+                    manager.update_balance(from_currency, from_amount - fee, session=session)
 
-                    db.transactions.insert_one({
+                    manager.record_transaction({
                         "from_currency": to_currency,
                         "from_amount": to_amount,
                         "to_currency": from_currency,
@@ -74,4 +66,6 @@ def process_signal(signal):
                     }, session=session)
 
         except PyMongoError as e:
-            print(f"Transaction failed: {e}")
+            print(f"❌ MongoDB transaction failed: {e}")
+        except Exception as e:
+            print(f"❌ Signal processing error: {e}")
