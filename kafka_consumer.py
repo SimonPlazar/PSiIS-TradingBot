@@ -14,6 +14,13 @@ consumer = KafkaConsumer(
     value_deserializer=lambda m: json.loads(m.decode('utf-8'))
 )
 
-print("Kafka consumer started.")
+print("📥 Kafka consumer started, waiting for signals...")
+
 for msg in consumer:
-    process_signal(msg.value)
+    signal = msg.value
+    try:
+        print(f"📨 Received signal: {signal}")
+        process_signal(signal)
+        print("✅ Signal processed successfully.\n")
+    except Exception as e:
+        print(f"❌ Failed to process signal: {e}\n")
