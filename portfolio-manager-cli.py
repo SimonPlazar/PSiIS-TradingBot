@@ -8,85 +8,87 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # Constants
-FEE_RATE = 0.001  # 0.1% fee
+FEE_RATE = 0.001  # Trading fee rate
+REQUIRED_ENV_VARS = [
+    "MONGO_INITDB_ROOT_USERNAME",
+    "MONGO_INITDB_ROOT_PASSWORD",
+    "MONGO_HOST",
+    "MONGO_PORT",
+    "MONGO_INITDB_DATABASE"
+]
 
-DB_URI = f"mongodb://{os.getenv('MONGO_INITDB_ROOT_USERNAME')}:{os.getenv('MONGO_INITDB_ROOT_PASSWORD')}@{os.getenv('MONGO_HOST')}:{os.getenv('MONGO_PORT')}/{os.getenv('MONGO_INITDB_DATABASE')}"
-DB_NAME = os.getenv('MONGO_INITDB_ROOT_USERNAME', 'trading_bot')
+# Check environment variables
+for var in REQUIRED_ENV_VARS:
+    if not os.getenv(var):
+        raise EnvironmentError(f"Missing required environment variable: {var}")
+
+DB_URI = (
+    f"mongodb://{os.getenv('MONGO_INITDB_ROOT_USERNAME')}:{os.getenv('MONGO_INITDB_ROOT_PASSWORD')}"
+    f"@{os.getenv('MONGO_HOST')}:{os.getenv('MONGO_PORT')}/{os.getenv('MONGO_INITDB_DATABASE')}"
+)
+DB_NAME = os.getenv("MONGO_INITDB_ROOT_USERNAME", "trading_bot")
 
 
 class PortfolioManager:
     def __init__(self, db_uri=DB_URI):
-        # MongoDB setup
         self.mongo_client = MongoClient(db_uri)
         self.db = self.mongo_client[DB_NAME]
+        self.portfolio_id = self._init_or_get_portfolio_id()
 
-        # Get active portfolio or create one
+    def _init_or_get_portfolio_id(self):
         portfolio = self.db.portfolios.find_one({"active": True})
-        if not portfolio:
-            portfolio_id = self.db.portfolios.insert_one({
-                "initial_balance_eur": 0,
-                "balance_eur": 0,
-                "holdings": {},
-                "active": True,
-                "created_at": datetime.now()
-            }).inserted_id
-            self.portfolio_id = portfolio_id
-        else:
-            self.portfolio_id = portfolio["_id"]
+        if portfolio:
+            return portfolio["_id"]
+        new_portfolio = {
+            "initial_balance_eur": 0,
+            "balance_eur": 0,
+            "holdings": {},
+            "active": True,
+            "created_at": datetime.now()
+        }
+        return self.db.portfolios.insert_one(new_portfolio).inserted_id
+
+    def _update_portfolio(self, updates: dict):
+        self.db.portfolios.update_one(
+            {"_id": self.portfolio_id},
+            {"$set": updates}
+        )
+
+    def _insert_transaction(self, transaction: dict):
+        transaction["portfolio_id"] = self.portfolio_id
+        transaction["timestamp"] = datetime.now()
+        self.db.transactions.insert_one(transaction)
+
+    def deposit_funds(self, amount_eur):
+        portfolio = self.get_portfolio()
+        new_balance = portfolio["balance_eur"] + amount_eur
+        self._update_portfolio({"balance_eur": new_balance})
+        self._insert_transaction({
+            "type": "DEPOSIT",
+            "amount_eur": amount_eur,
+            "balance_after": new_balance
+        })
+        print(f"Deposited €{amount_eur:.2f}. New balance: €{new_balance:.2f}")
+
+    def withdraw_funds(self, amount_eur):
+        portfolio = self.get_portfolio()
+        balance = portfolio["balance_eur"]
+        if balance < amount_eur:
+            print(f"❌ Insufficient balance. Available: €{balance:.2f}")
+            return False
+
+        new_balance = balance - amount_eur
+        self._update_portfolio({"balance_eur": new_balance})
+        self._insert_transaction({
+            "type": "WITHDRAWAL",
+            "amount_eur": amount_eur,
+            "balance_after": new_balance
+        })
+        print(f"Withdrew €{amount_eur:.2f}. New balance: €{new_balance:.2f}")
+        return True
 
     def get_portfolio(self):
         return self.db.portfolios.find_one({"_id": self.portfolio_id})
-
-    def deposit_funds(self, amount_eur):
-        """Add funds to the portfolio balance"""
-        portfolio = self.get_portfolio()
-        new_balance = portfolio["balance_eur"] + amount_eur
-
-        self.db.portfolios.update_one(
-            {"_id": self.portfolio_id},
-            {"$set": {"balance_eur": new_balance}}
-        )
-
-        # Record transaction
-        transaction = {
-            'timestamp': datetime.now(),
-            'type': 'DEPOSIT',
-            'amount_eur': amount_eur,
-            'balance_after': new_balance,
-            'portfolio_id': self.portfolio_id
-        }
-        self.db.transactions.insert_one(transaction)
-
-        print(f"Successfully deposited €{amount_eur}. New balance: €{new_balance}")
-        return True
-
-    def withdraw_funds(self, amount_eur):
-        """Withdraw funds from the portfolio balance"""
-        portfolio = self.get_portfolio()
-
-        if portfolio["balance_eur"] < amount_eur:
-            print(f"Error: Insufficient balance. Current balance: €{portfolio['balance_eur']}")
-            return False
-
-        new_balance = portfolio["balance_eur"] - amount_eur
-
-        self.db.portfolios.update_one(
-            {"_id": self.portfolio_id},
-            {"$set": {"balance_eur": new_balance}}
-        )
-
-        # Record transaction
-        transaction = {
-            'timestamp': datetime.now(),
-            'type': 'WITHDRAWAL',
-            'amount_eur': amount_eur,
-            'balance_after': new_balance,
-            'portfolio_id': self.portfolio_id
-        }
-        self.db.transactions.insert_one(transaction)
-
-        print(f"Successfully withdrew €{amount_eur}. New balance: €{new_balance}")
-        return True
 
     def manual_buy(self, symbol, amount_eur=None, amount_crypto=None, price=None, fee_rate=FEE_RATE):
         """Manually record a buy transaction"""
